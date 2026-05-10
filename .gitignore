@@ -1,0 +1,27 @@
+# Databases containing user message data — NEVER commit
+search.db
+search.db-*
+transcripts.db
+transcripts.db-*
+
+# Audit + draft logs (per-install state)
+audit.log
+drafts.log
+*.log
+
+# Env + secrets
+.env
+.env.local
+
+# Python tooling
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Virtualenvs
+.venv/
+venv/
