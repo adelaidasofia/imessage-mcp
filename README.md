@@ -38,6 +38,22 @@ last_sync: 2026-05-07
 
 Body sections per date with reactions, edits, replies, voice-note transcripts, and attachment wikilinks.
 
+## Related MCPs
+
+Same author, same architecture pattern (FastMCP, draft+confirm on writes where applicable, vault auto-export, MIT):
+
+- [slack-mcp](https://github.com/adelaidasofia/slack-mcp) - multi-workspace Slack
+- [whatsapp-mcp](https://github.com/adelaidasofia/whatsapp-mcp) - WhatsApp via whatsmeow
+- [google-workspace-mcp](https://github.com/adelaidasofia/google-workspace-mcp) - Gmail / Calendar / Drive / Docs / Sheets
+- [apollo-mcp](https://github.com/adelaidasofia/apollo-mcp) - Apollo.io CRM + sequences
+- [substack-mcp](https://github.com/adelaidasofia/substack-mcp) - Substack writing + analytics
+- [luma-mcp](https://github.com/adelaidasofia/luma-mcp) - lu.ma events
+- [parse-mcp](https://github.com/adelaidasofia/parse-mcp) - markitdown / Docling / LlamaParse router
+- [rescuetime-mcp](https://github.com/adelaidasofia/rescuetime-mcp) - RescueTime productivity data
+- [graph-query-mcp](https://github.com/adelaidasofia/graph-query-mcp) - vault knowledge graph queries
+- [investor-relations-mcp](https://github.com/adelaidasofia/investor-relations-mcp) - seed-raise pipeline tracker
+- [vault-sync-mcp](https://github.com/adelaidasofia/vault-sync-mcp) - bidirectional vault sync
+
 ## License
 
 MIT.
