@@ -96,11 +96,9 @@ def _send_via_applescript(recipient: str, text: str, service: str) -> None:
     on run
         set targetText to {js_text}
         set targetRecipient to {js_recipient}
-        set targetServiceName to {js_service}
         tell application "Messages"
-            set targetService to first service whose service type = id of targetServiceName
             try
-                set targetBuddy to buddy targetRecipient of targetService
+                set targetBuddy to buddy targetRecipient
             on error
                 -- Fall back to first matching buddy by id substring across services.
                 set targetBuddy to (first buddy whose id contains targetRecipient)
