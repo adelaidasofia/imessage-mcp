@@ -1,0 +1,26 @@
+name: test
+# Auto-managed by ~/.local/bin/gh-harden-repos.sh. Do not hand-edit.
+# Minimal pytest gate for Python MCP servers. Allows Layer 5
+# dependabot-auto-merge to wait on a real check.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install package + pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . || pip install .
+          pip install pytest
+      - name: Run tests
+        run: pytest tests/ -v
