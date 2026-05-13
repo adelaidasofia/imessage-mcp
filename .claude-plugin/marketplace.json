@@ -1,0 +1,15 @@
+{
+  "$schema": "https://code.claude.com/schemas/marketplace.json",
+  "name": "imessage-mcp",
+  "owner": {
+    "name": "Mycelium AI",
+    "url": "https://myceliumai.co"
+  },
+  "plugins": [
+    {
+      "name": "imessage-mcp",
+      "source": "./",
+      "description": "macOS-only MCP server that exposes iMessage history to Claude and exports per-chat conversations into an Obsidian vault. Direct chat.db read, Whisper voice-note transcription, FTS5 search, AppleScript send with draft+confirm."
+    }
+  ]
+}

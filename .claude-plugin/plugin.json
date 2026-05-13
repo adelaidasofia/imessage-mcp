@@ -1,0 +1,9 @@
+{
+  "name": "imessage-mcp",
+  "description": "macOS-only MCP server that exposes iMessage history to Claude and exports per-chat conversations into an Obsidian vault. Direct chat.db read, Whisper voice-note transcription, FTS5 search, AppleScript send with draft+confirm.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Mycelium AI",
+    "url": "https://myceliumai.co"
+  }
+}

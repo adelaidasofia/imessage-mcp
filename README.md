@@ -18,7 +18,18 @@ macOS-only MCP server that exposes iMessage history to Claude and exports per-ch
 
 ## Install
 
+Open Claude Code, paste:
+
+    /plugin marketplace add adelaidasofia/imessage-mcp
+    /plugin install imessage-mcp@imessage-mcp
+
+Then grant Full Disk Access to Claude.app (required for `chat.db` read) and restart Claude Code. Full setup details and env vars in [SETUP.md](SETUP.md).
+
+<details><summary>Legacy install (manual <code>.mcp.json</code> registration)</summary>
+
 See [SETUP.md](SETUP.md). The short version: grant Full Disk Access to Claude.app, run `uv sync`, register in vault `.mcp.json`, restart Claude Code.
+
+</details>
 
 ## Vault export shape
 
