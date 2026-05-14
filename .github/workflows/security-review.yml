@@ -1,0 +1,33 @@
+name: Claude Security Review
+# Per anthropic-org Phase 5 audit (2026-05-13): claude-code-security-review
+# adopted as a Mycelium-client demo asset. Sales talk-track: "AI security
+# review on every PR your team opens, automated."
+#
+# Setup: requires CLAUDE_API_KEY repo secret. Set with:
+#   gh secret set CLAUDE_API_KEY -R adelaidasofia/<repo>
+# Until then, the workflow runs but the security-review step fails with a
+# clear missing-key error — does not block other CI.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+
+      - name: Claude security review
+        uses: anthropics/claude-code-security-review@main
+        with:
+          comment-pr: true
+          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
