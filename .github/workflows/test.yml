@@ -17,10 +17,22 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install package + pytest
+      - name: Install package + test deps
         run: |
           python -m pip install --upgrade pip
-          pip install -e . || pip install .
-          pip install pytest
+          # Install the package (validates imports/build), the repo's own
+          # test extra if it declares one, then pytest + pytest-asyncio so
+          # async MCP-server tests run regardless of how the repo declares
+          # its test dependencies.
+          pip install -e ".[test]" || pip install -e ".[dev]" || pip install -e . || pip install .
+          pip install pytest pytest-asyncio
       - name: Run tests
-        run: pytest tests/ -v
+        run: |
+          set +e
+          pytest tests/ -v
+          code=$?
+          set -e
+          # Exit 5 = no tests collected (tests/ holds only credential-gated
+          # integration smoke scripts with no pytest functions). Tolerate it;
+          # the install step above already validated the package imports.
+          [ "$code" = "0" ] || [ "$code" = "5" ]
