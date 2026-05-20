@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "description": "macOS-only MCP server that exposes iMessage chat.db to Claude and exports per-chat history to an Obsidian vault.",
   "author": {
-    "name": "Adelaida Diaz-Roa",
+    "name": "adelaidasofia",
     "url": "https://github.com/adelaidasofia"
   },
   "repository": {

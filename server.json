@@ -11,12 +11,12 @@
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/adelaidasofia/imessage-mcp/releases/latest/download/imessage-mcp.mcpb",
+      "identifier": "https://github.com/adelaidasofia/imessage-mcp/releases/download/v0.1.0/imessage-mcp.mcpb",
       "version": "0.1.0",
       "transport": {
         "type": "stdio"
       },
-      "fileSha256": "c9925d1388f4b50d0cb7597f836c311f1ebaa63d926933c902ad0d948ff90ca8"
+      "fileSha256": "bc3352234fbaefe33939ff06ee0c8d929ec36c0b4f73b6b52cf2cd0253af6ba3"
     }
   ]
 }
