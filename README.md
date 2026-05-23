@@ -1,5 +1,20 @@
 # imessage-mcp
 
+
+<!-- mycelium-badges:start -->
+
+<p>
+  <a href="https://github.com/adelaidasofia/imessage-mcp/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/adelaidasofia/imessage-mcp?color=blue"></a>
+  <a href="https://github.com/adelaidasofia/imessage-mcp/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/adelaidasofia/imessage-mcp?color=eab308"></a>
+  <a href="https://github.com/adelaidasofia/imessage-mcp/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/adelaidasofia/imessage-mcp"></a>
+  <a href="https://github.com/adelaidasofia/imessage-mcp/issues"><img alt="Open issues" src="https://img.shields.io/github/issues/adelaidasofia/imessage-mcp"></a>
+  <a href="https://pypi.org/project/adelaidasofia-imessage-mcp/"><img alt="PyPI version" src="https://img.shields.io/pypi/v/adelaidasofia-imessage-mcp?color=blue&label=pypi"></a>
+  <a href="https://pypi.org/project/adelaidasofia-imessage-mcp/"><img alt="PyPI downloads" src="https://img.shields.io/pypi/dm/adelaidasofia-imessage-mcp?color=blue&label=downloads"></a>
+  <a href="https://myceliumai.co"><img alt="Built by Mycelium AI" src="https://img.shields.io/badge/built_by-Mycelium_AI-15B89A"></a>
+</p>
+
+<!-- mycelium-badges:end -->
+
 macOS-only MCP server that exposes iMessage history to Claude and exports per-chat conversations into an Obsidian vault. Mirrors the whatsapp-mcp pattern: same hook, same launchd cadence, same vault shape.
 
 ## Architecture
