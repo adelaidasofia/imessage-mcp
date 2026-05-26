@@ -67,8 +67,10 @@ jobs:
               -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md' \
               ':!LICENSE*' ':!COPYING*' ':!NOTICE*' \
               ':!AUTHORS*' ':!MAINTAINERS*' \
-              ':!pyproject.toml' ':!setup.py' ':!setup.cfg' \
-              ':!package.json' ':!Cargo.toml' ':!manifest.json' \
+              ':!*pyproject.toml' ':!*setup.py' ':!*setup.cfg' \
+              ':!*package.json' ':!*Cargo.toml' ':!*manifest.json' \
+              ':!.env.example' ':!*.env.example' \
+              ':!tests/integration/test_smoke.py' \
               ':!vendor/' ':!node_modules/' ':!*.lock' \
               ':!package-lock.json' ':!pnpm-lock.yaml' \
               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
@@ -138,6 +140,8 @@ jobs:
                 --exclude='pyproject.toml' --exclude='setup.py' \
                 --exclude='setup.cfg' --exclude='package.json' \
                 --exclude='Cargo.toml' --exclude='manifest.json' \
+                --exclude='.env.example' \
+                --exclude='test_smoke.py' \
                 --exclude='*.lock' --exclude='package-lock.json' \
                 --exclude='pnpm-lock.yaml' \
                 --exclude-dir='vendor' --exclude-dir='node_modules' \
