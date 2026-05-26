@@ -68,7 +68,7 @@ jobs:
               ':!LICENSE*' ':!COPYING*' ':!NOTICE*' \
               ':!AUTHORS*' ':!MAINTAINERS*' \
               ':!pyproject.toml' ':!setup.py' ':!setup.cfg' \
-              ':!package.json' ':!Cargo.toml' \
+              ':!package.json' ':!Cargo.toml' ':!manifest.json' \
               ':!vendor/' ':!node_modules/' ':!*.lock' \
               ':!package-lock.json' ':!pnpm-lock.yaml' \
               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
@@ -137,7 +137,7 @@ jobs:
                 --exclude='AUTHORS*' --exclude='MAINTAINERS*' \
                 --exclude='pyproject.toml' --exclude='setup.py' \
                 --exclude='setup.cfg' --exclude='package.json' \
-                --exclude='Cargo.toml' \
+                --exclude='Cargo.toml' --exclude='manifest.json' \
                 --exclude='*.lock' --exclude='package-lock.json' \
                 --exclude='pnpm-lock.yaml' \
                 --exclude-dir='vendor' --exclude-dir='node_modules' \
