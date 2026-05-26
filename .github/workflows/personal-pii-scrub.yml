@@ -66,6 +66,9 @@ jobs:
             matches=$(git grep -nE "$p" \
               -- ':!README*' ':!CHANGELOG*' ':!docs/' ':!*.md' \
               ':!LICENSE*' ':!COPYING*' ':!NOTICE*' \
+              ':!AUTHORS*' ':!MAINTAINERS*' \
+              ':!pyproject.toml' ':!setup.py' ':!setup.cfg' \
+              ':!package.json' ':!Cargo.toml' \
               ':!vendor/' ':!node_modules/' ':!*.lock' \
               ':!package-lock.json' ':!pnpm-lock.yaml' \
               ':!.github/workflows/personal-pii-scrub.yml' 2>/dev/null || true)
@@ -131,6 +134,10 @@ jobs:
               matches=$(grep -rnaE \
                 --exclude='README*' --exclude='CHANGELOG*' --exclude='*.md' \
                 --exclude='LICENSE*' --exclude='COPYING*' --exclude='NOTICE*' \
+                --exclude='AUTHORS*' --exclude='MAINTAINERS*' \
+                --exclude='pyproject.toml' --exclude='setup.py' \
+                --exclude='setup.cfg' --exclude='package.json' \
+                --exclude='Cargo.toml' \
                 --exclude='*.lock' --exclude='package-lock.json' \
                 --exclude='pnpm-lock.yaml' \
                 --exclude-dir='vendor' --exclude-dir='node_modules' \
