@@ -5,8 +5,10 @@ name: Claude Security Review
 #
 # Setup: requires CLAUDE_API_KEY repo secret. Set with:
 #   gh secret set CLAUDE_API_KEY -R adelaidasofia/<repo>
-# Until then, the workflow runs but the security-review step fails with a
-# clear missing-key error — does not block other CI.
+# The review STEP is skipped cleanly when the key is absent (so the "security"
+# check stays green instead of perpetually failing with a missing-key error),
+# and the job is skipped entirely for dependabot[bot] (which cannot read repo
+# secrets, and whose version-bump PRs carry no code for an LLM to review).
 
 on:
   pull_request:
@@ -19,15 +21,20 @@ permissions:
 jobs:
   security:
     runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
     continue-on-error: true
+    env:
+      CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
     steps:
       - uses: actions/checkout@v6
+        if: env.CLAUDE_API_KEY != ''
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 2
 
       - name: Claude security review
+        if: env.CLAUDE_API_KEY != ''
         uses: anthropics/claude-code-security-review@main
         with:
           comment-pr: true
-          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
+          claude-api-key: ${{ env.CLAUDE_API_KEY }}
