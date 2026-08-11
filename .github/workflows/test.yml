@@ -40,7 +40,27 @@ jobs:
           pytest tests/ -v
           code=$?
           set -e
-          # Exit 5 = no tests collected (tests/ holds only credential-gated
-          # integration smoke scripts with no pytest functions). Tolerate it;
-          # the install step above already validated the package imports.
-          [ "$code" = "0" ] || [ "$code" = "5" ]
+          # Exit 5 = pytest collected 0 tests. NOT tolerated.
+          #
+          # This template ended in `[ "$code" = "0" ] || [ "$code" = "5" ]`
+          # until 2026-08-11, so a run that validated NOTHING reported exactly
+          # the same green as a fully passing run -- the bug class where a
+          # skipped gate and a passing gate emit the same signal.
+          #
+          # The tolerance was justified by a premise ("tests/ holds only
+          # credential-gated integration smoke scripts with no pytest
+          # functions") that was measured false across every repo carrying it:
+          # all 22 have real collectable test functions. So exit 5 here does
+          # not mean "nothing to run" -- it means collection BROKE (import
+          # error, renamed files, wrong rootdir, a raising conftest), which is
+          # a real defect this gate exists to catch.
+          #
+          # A repo that genuinely has no pytest suite must not carry this
+          # workflow at all. gh-harden-repos.sh detects that at install time
+          # and writes the explicitly-labelled NO TEST SUITE workflow instead,
+          # which says so on every run rather than encoding it as a green here.
+          if [ "$code" = "5" ]; then
+            echo "::error title=No tests collected::pytest exited 5 -- it collected 0 tests. A gate that ran nothing is not a gate that passed, so this run fails. Fix collection; if this repo genuinely has no pytest suite it should be carrying the NO TEST SUITE workflow instead (gh-harden-repos.sh installs that automatically)."
+            exit 1
+          fi
+          exit "$code"
