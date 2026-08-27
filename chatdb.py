@@ -42,15 +42,44 @@ def unix_to_apple_ns(unix_ts: int | float) -> int:
 
 @contextmanager
 def open_db() -> Iterator[sqlite3.Connection]:
-    """Open chat.db read-only and immutable. Yields a Connection.
+    """Open chat.db read-only. Yields a Connection.
     Raises FDADenied if TCC blocks the read.
+
+    chat.db runs in WAL mode, so recent messages sit in chat.db-wal until
+    Messages.app checkpoints. Opening with immutable=1 makes SQLite ignore the
+    WAL and silently return a stale snapshot frozen at the last checkpoint
+    (measured 2026-08-26: 21048 rows immutable vs 21052 live, with the four
+    newest messages missing and a 1.6 MB -wal on disk). That failure is quiet
+    and looks exactly like a quiet mailbox: search returns nothing, list_chats
+    reports an old "latest" timestamp, and the FTS index can never advance.
+
+    So try a plain read-only open first, which reads the WAL, and fall back to
+    immutable only when that fails, which is the case where no -shm exists and
+    no writer holds the database. The probe query is required: WAL and -shm
+    errors surface on the first read, not at connect time.
     """
     if not CHAT_DB.exists():
         raise FileNotFoundError(f"chat.db not found at {CHAT_DB}")
-    uri = f"file:{CHAT_DB}?mode=ro&immutable=1"
-    try:
-        conn = sqlite3.connect(uri, uri=True, timeout=5.0)
-    except sqlite3.OperationalError as e:
+    conn = None
+    err: Exception | None = None
+    for uri in (
+        f"file:{CHAT_DB}?mode=ro",
+        f"file:{CHAT_DB}?mode=ro&immutable=1",
+    ):
+        candidate = None
+        try:
+            candidate = sqlite3.connect(uri, uri=True, timeout=5.0)
+            candidate.execute(
+                "SELECT ROWID FROM message ORDER BY ROWID DESC LIMIT 1"
+            ).fetchone()
+            conn = candidate
+            break
+        except sqlite3.OperationalError as e:
+            err = e
+            if candidate is not None:
+                candidate.close()
+    if conn is None:
+        e = err
         msg = str(e).lower()
         # macOS TCC denial surfaces in three forms depending on the calling
         # context: "authorization denied" (direct API), "operation not
@@ -73,7 +102,10 @@ def open_db() -> Iterator[sqlite3.Connection]:
                 "(for the launchd export wrapper), and /opt/homebrew/bin/python3 "
                 "(for any subprocess that re-reads chat.db)."
             ) from e
-        raise
+        # Not a TCC denial. Re-raise the last driver error explicitly: this is
+        # no longer inside an `except` block, so a bare `raise` would fail with
+        # "No active exception to reraise" and mask the real cause.
+        raise e
     conn.row_factory = sqlite3.Row
     try:
         yield conn
