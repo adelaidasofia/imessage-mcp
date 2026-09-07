@@ -8,21 +8,53 @@ Functions return plain dicts and lists. Higher modules format for output.
 """
 from __future__ import annotations
 
+import contextvars
+import logging
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, NoReturn
 
 CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
+
+log = logging.getLogger(__name__)
 
 # Apple absolute time epoch: 2001-01-01 UTC = 978307200 unix seconds.
 APPLE_EPOCH_OFFSET = 978307200
 NANO_THRESHOLD = 100_000_000_000  # > ~3 yrs of seconds → nanoseconds
 
+# Connection policy for open_db. Module level so tests can shrink them.
+OPEN_TIMEOUT = 5.0  # seconds SQLite waits on a held lock, per attempt
+BUSY_RETRIES = 3  # extra mode=ro attempts before giving up
+BUSY_BACKOFF = 0.25  # seconds before the first retry, doubled each time
+
+# Lock contention. Retry the fresh path; never downgrade to immutable.
+_BUSY_ERRORS = frozenset({"SQLITE_BUSY", "SQLITE_LOCKED"})
+# The genuine no--shm case (read-only volume, or a copy with no WAL beside it),
+# and also how a TCC denial reaches us. This is the only fallback trigger.
+_CANTOPEN_ERRORS = frozenset({"SQLITE_CANTOPEN"})
+
+# True when the connection in scope came from the immutable fallback, so reads
+# may be missing everything still in the WAL. A ContextVar rather than a module
+# global because the MCP server serves tool calls concurrently.
+_stale_snapshot: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "imessage_stale_snapshot", default=False
+)
+
 
 class FDADenied(RuntimeError):
     """Raised when chat.db cannot be opened due to TCC (Full Disk Access)."""
+
+
+def reading_stale_snapshot() -> bool:
+    """True if the open_db connection in scope is an immutable (stale) snapshot.
+
+    Callers that report counts or "latest message" timestamps should say so
+    rather than presenting a checkpoint-frozen number as current.
+    """
+    return _stale_snapshot.get()
 
 
 def apple_to_unix(apple_ts: int | float | None) -> int:
@@ -40,44 +72,141 @@ def unix_to_apple_ns(unix_ts: int | float) -> int:
     return int((unix_ts - APPLE_EPOCH_OFFSET) * 1_000_000_000)
 
 
+def _errname(e: BaseException | None) -> str:
+    """SQLite result code name for an exception, or "" if it carries none."""
+    return getattr(e, "sqlite_errorname", "") or ""
+
+
+def _connect_and_probe(uri: str) -> sqlite3.Connection:
+    """Connect, then run one probe query. Closes the connection on any failure.
+
+    The probe is required: WAL and -shm errors surface on the first read, not at
+    connect time. It also widens the exception surface past OperationalError (a
+    file that is not a database raises DatabaseError here), which is why the
+    close sits in a finally rather than in one except branch.
+    """
+    candidate = sqlite3.connect(uri, uri=True, timeout=OPEN_TIMEOUT)
+    adopted = False
+    try:
+        candidate.execute(
+            "SELECT ROWID FROM message ORDER BY ROWID DESC LIMIT 1"
+        ).fetchone()
+        adopted = True
+        return candidate
+    finally:
+        if not adopted:
+            candidate.close()
+
+
+def _raise_open_failure(e: BaseException) -> NoReturn:
+    """Translate a failed open into FDADenied, or re-raise the driver error."""
+    msg = str(e).lower()
+    # macOS TCC denial surfaces in three forms depending on the calling
+    # context: "authorization denied" (direct API), "operation not
+    # permitted" (POSIX), or "unable to open database file" (sqlite3).
+    if any(
+        kw in msg
+        for kw in (
+            "authorization",
+            "permission",
+            "denied",
+            "operation not permitted",
+            "unable to open database file",
+        )
+    ):
+        raise FDADenied(
+            "chat.db cannot be opened. Most likely cause: macOS Full Disk "
+            "Access is not granted to the calling process. Grant FDA in "
+            "System Settings → Privacy & Security → Full Disk Access to: "
+            "/Applications/Claude.app (for the MCP server), /bin/bash "
+            "(for the launchd export wrapper), and /opt/homebrew/bin/python3 "
+            "(for any subprocess that re-reads chat.db)."
+        ) from e
+    # Not a TCC denial. Re-raise the driver error explicitly: this is no longer
+    # inside an `except` block, so a bare `raise` would fail with "No active
+    # exception to reraise" and mask the real cause.
+    raise e
+
+
 @contextmanager
 def open_db() -> Iterator[sqlite3.Connection]:
-    """Open chat.db read-only and immutable. Yields a Connection.
+    """Open chat.db read-only. Yields a Connection.
     Raises FDADenied if TCC blocks the read.
+
+    chat.db runs in WAL mode, so recent messages sit in chat.db-wal until
+    Messages.app checkpoints. Opening with immutable=1 makes SQLite ignore the
+    WAL and silently return a stale snapshot frozen at the last checkpoint
+    (measured 2026-08-26: 21048 rows immutable vs 21052 live, with the four
+    newest messages missing and a 1.6 MB -wal on disk). That failure is quiet
+    and looks exactly like a quiet mailbox: search returns nothing, list_chats
+    reports an old "latest" timestamp, and the FTS index can never advance.
+
+    So the plain read-only open, which reads the WAL, is the only path that
+    normally runs. The three outcomes of a failure are kept apart, because
+    treating them alike reintroduces the stale read this function exists to
+    prevent:
+
+    - SQLITE_BUSY / SQLITE_LOCKED is contention, not configuration. Retry
+      mode=ro with backoff. Downgrading here would hand back a stale snapshot
+      whenever Messages.app happened to hold the lock, with no way for the
+      caller to know.
+    - SQLITE_CANTOPEN is the genuine fallback case: no -shm can be created, so
+      the database is on a read-only volume or is a copy with no WAL beside it.
+      Fall back to immutable=1, log it, and flag it through
+      reading_stale_snapshot() so callers can label the numbers they report.
+    - Anything else raises, after the FDA translation gets its look at it.
+
+    Side effect worth knowing: a mode=ro reader creates chat.db-shm where
+    immutable=1 did not. That is normal WAL reader behaviour and the file holds
+    no message data.
     """
     if not CHAT_DB.exists():
         raise FileNotFoundError(f"chat.db not found at {CHAT_DB}")
-    uri = f"file:{CHAT_DB}?mode=ro&immutable=1"
-    try:
-        conn = sqlite3.connect(uri, uri=True, timeout=5.0)
-    except sqlite3.OperationalError as e:
-        msg = str(e).lower()
-        # macOS TCC denial surfaces in three forms depending on the calling
-        # context: "authorization denied" (direct API), "operation not
-        # permitted" (POSIX), or "unable to open database file" (sqlite3).
-        if any(
-            kw in msg
-            for kw in (
-                "authorization",
-                "permission",
-                "denied",
-                "operation not permitted",
-                "unable to open database file",
-            )
-        ):
-            raise FDADenied(
-                "chat.db cannot be opened. Most likely cause: macOS Full Disk "
-                "Access is not granted to the calling process. Grant FDA in "
-                "System Settings → Privacy & Security → Full Disk Access to: "
-                "/Applications/Claude.app (for the MCP server), /bin/bash "
-                "(for the launchd export wrapper), and /opt/homebrew/bin/python3 "
-                "(for any subprocess that re-reads chat.db)."
-            ) from e
-        raise
+
+    fresh_uri = f"file:{CHAT_DB}?mode=ro"
+    immutable_uri = f"file:{CHAT_DB}?mode=ro&immutable=1"
+
+    conn: sqlite3.Connection | None = None
+    err: BaseException | None = None
+    stale = False
+    backoff = BUSY_BACKOFF
+
+    for attempt in range(BUSY_RETRIES + 1):
+        try:
+            conn = _connect_and_probe(fresh_uri)
+            break
+        except sqlite3.Error as e:
+            err = e
+            if _errname(e) in _BUSY_ERRORS and attempt < BUSY_RETRIES:
+                time.sleep(backoff)
+                backoff *= 2
+                continue
+            break
+
+    if conn is None and _errname(err) in _CANTOPEN_ERRORS:
+        try:
+            conn = _connect_and_probe(immutable_uri)
+            stale = True
+        except sqlite3.Error as e:
+            err = e
+
+    if conn is None:
+        _raise_open_failure(err if err is not None else sqlite3.OperationalError())
+
+    if stale:
+        log.warning(
+            "chat.db opened with immutable=1 after %s. This is a snapshot frozen "
+            "at the last checkpoint, so anything still in chat.db-wal is missing "
+            "and counts may be low.",
+            _errname(err) or "a failed read-only open",
+        )
+
     conn.row_factory = sqlite3.Row
+    token = _stale_snapshot.set(stale)
     try:
         yield conn
     finally:
+        _stale_snapshot.reset(token)
         conn.close()
 
 
@@ -157,11 +286,15 @@ def healthcheck() -> dict[str, Any]:
         "voice_note_count": 0,
         "edit_count": 0,
         "reply_thread_count": 0,
+        "stale_snapshot": False,
         "error": None,
     }
     try:
         with open_db() as conn:
             out["fda_granted"] = True
+            # Travels with the counts on purpose: an immutable open is frozen at
+            # the last checkpoint, so a confident number here can still be wrong.
+            out["stale_snapshot"] = reading_stale_snapshot()
             out["chat_count"] = conn.execute("SELECT COUNT(*) FROM chat").fetchone()[0]
             out["message_count"] = conn.execute("SELECT COUNT(*) FROM message").fetchone()[0]
             out["voice_note_count"] = conn.execute(
