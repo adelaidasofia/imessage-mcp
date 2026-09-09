@@ -20,7 +20,7 @@ Verify each path:
 sqlite3 -readonly ~/Library/Messages/chat.db "SELECT COUNT(*) FROM message;"
 
 # launchd-spawned bash (after granting FDA to /bin/bash):
-launchctl kickstart -k gui/$(id -u)/com.adelaida.imessage-export-vault
+launchctl kickstart -k gui/$(id -u)/local.imessage-export-vault
 tail ~/Library/Logs/imessage-export-vault.launchd.log
 # Expect: `export done rc=0`. `rc=1` with "unable to open database file" = FDA still missing.
 ```
@@ -77,12 +77,12 @@ Three artifacts ship outside this repo to mirror whatsapp-mcp:
 
 - `~/.local/bin/imessage-export-vault.sh` — one-shot export wrapper
 - `~/.claude/hooks/imessage-mcp-auto-export.py` — PostToolUse hook (30s rate limit)
-- `~/Library/LaunchAgents/com.adelaida.imessage-export-vault.plist` — every 4h + RunAtLoad
+- `~/Library/LaunchAgents/local.imessage-export-vault.plist` — every 4h + RunAtLoad
 
 Load the plist:
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.adelaida.imessage-export-vault.plist
-launchctl kickstart -k gui/$(id -u)/com.adelaida.imessage-export-vault
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.imessage-export-vault.plist
+launchctl kickstart -k gui/$(id -u)/local.imessage-export-vault
 ```
 
 ## 6. Smoke test
