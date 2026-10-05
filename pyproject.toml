@@ -10,7 +10,7 @@ authors = [
 ]
 
 dependencies = [
-    "fastmcp>=4.0.9",
+    "fastmcp>=4.0.10",
     "python-frontmatter>=1.3.0",
     "unidecode>=1.4.0",
 ]
