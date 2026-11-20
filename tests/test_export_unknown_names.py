@@ -158,3 +158,75 @@ def test_groups_with_the_same_known_members_do_not_share_a_file(env):
 ])
 def test_looks_like_identifier(name, want):
     assert export._looks_like_identifier(name) is want
+
+
+def _bodies(root: Path) -> str:
+    return "\n".join(p.read_text(encoding="utf-8") for p in _files(root))
+
+
+def test_email_spellings_are_one_chat_file_not_overwritten(env):
+    root, state = env
+    state["chats"] = [
+        _chat(1, "g-up", "Someone@Example.com"),
+        _chat(2, "g-low", "someone@example.com"),
+    ]
+    export.export_to_vault()
+    files = _files(root)
+    assert len(files) == 1, files
+    assert _guids(files[0]) == {"g-up", "g-low"}  # both chats' messages kept
+    assert frontmatter.load(str(files[0])).metadata["message_count"] == 2
+
+
+def test_groups_with_the_same_name_get_one_file_each(env):
+    root, state = env
+    state["names"] = {NAMED: "Alex Rivera", PHONE_A: "Sam Lee"}
+    state["chats"] = [
+        _chat(1, "g-f1", "chat111111111", kind="group", participants=[NAMED], display_name="Familia"),
+        _chat(2, "g-f2", "chat222222222", kind="group", participants=[PHONE_A], display_name="familia"),
+        _chat(3, "g-m1", "chat333333333", kind="group", participants=[NAMED, PHONE_A]),
+        _chat(4, "g-m2", "chat444444444", kind="group", participants=[NAMED, PHONE_A]),
+        _chat(5, "g-solo", "chat555555555", kind="group", participants=[PHONE_A], display_name="Trabajo"),
+    ]
+    export.export_to_vault()
+    files = _files(root / "Groups")
+    assert len(files) == 5, files
+    assert {frozenset(_guids(f)) for f in files} == {frozenset({g}) for g in ("g-f1", "g-f2", "g-m1", "g-m2", "g-solo")}
+    assert (root / "Groups" / "Trabajo.md").exists()  # no clash, no id
+
+
+def test_ids_do_not_depend_on_include_groups(env):
+    root, state = env
+    state["chats"] = [_chat(1, "g-a", PHONE_A), _chat(2, "g-grp", "chat1", kind="group", participants=[PHONE_B])]
+    export.export_to_vault(include_groups=True)
+    with_groups = sorted(f.name for f in _files(root) if f.parent == root)
+    for f in _files(root):
+        f.unlink()
+    state["chats"] = [c for c in state["chats"] if c["kind"] != "group"]
+    export.export_to_vault(include_groups=False)
+    assert sorted(f.name for f in _files(root) if f.parent == root) == with_groups
+
+
+def test_chat_joining_a_named_person_is_absorbed_and_old_file_retired(env):
+    root, state = env
+    state["names"] = {NAMED: "Alex Rivera"}
+    state["chats"] = [_chat(1, "g-a", PHONE_A), _chat(2, "g-n", NAMED)]
+    export.export_to_vault()
+    assert len(_files(root)) == 2
+    # Now the unknown number turns out to be Alex too.
+    state["names"] = {NAMED: "Alex Rivera", PHONE_A: "Alex Rivera"}
+    export.export_to_vault()
+    files = _files(root)
+    assert [f.name for f in files] == ["Alex Rivera.md"], files
+    assert _guids(files[0]) == {"g-a", "g-n"}
+    assert frontmatter.load(str(files[0])).metadata["message_count"] == 2
+
+
+def test_leftover_with_history_the_database_lacks_is_kept(env):
+    root, state = env
+    state["names"] = {NAMED: "Alex Rivera", PHONE_A: "Alex Rivera"}
+    state["chats"] = [_chat(1, "g-a", PHONE_A), _chat(2, "g-n", NAMED)]
+    (root / "Alex Rivera.md").write_text("---\ntype: imessage-chat\nchat_guid: g-n\n---\n\nx\n", encoding="utf-8")
+    old = root / "Chat with an unknown number (iMessage) old.md"
+    old.write_text("---\ntype: imessage-chat\nchat_guid: g-a\nmessage_count: 40\n---\n\nolder\n", encoding="utf-8")
+    export.export_to_vault()
+    assert old.exists()

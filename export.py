@@ -172,7 +172,10 @@ def export_to_vault(
     contact_filter_lower = (contact_filter or "").strip().lower()
 
     # Bucket direct chats by resolved display name so the same person across
-    # phone + email threads merges into one file. Groups stay one-file-per-chat.
+    # phone + email threads merges into one file. A chat with no known name
+    # is bucketed by its normalised handle, so two spellings of one address
+    # (capitals in an email) are one chat's file, not two chats in one file.
+    # Groups stay one-file-per-chat.
     direct_buckets: dict[str, list[dict[str, Any]]] = {}
     group_chats: list[dict[str, Any]] = []
     for chat in chats:
@@ -180,32 +183,19 @@ def export_to_vault(
             group_chats.append(chat)
         else:
             display = _resolve_chat_display(chat)
-            direct_buckets.setdefault(display, []).append(chat)
+            if _is_identifier(display, [chat]):
+                key = _unnamed_key_direct(display)
+            else:
+                key = "name:" + display
+            direct_buckets.setdefault(key, []).append(chat)
 
-    # File names for chats with no known name: a hash of the handle (direct)
-    # or chat guid (group). Any 6-char prefix two chats share is lengthened
-    # for both, so the choice does not depend on chat order.
-    unnamed_keys: list[str] = []
-    for display, chat_list in direct_buckets.items():
-        if _is_identifier(display, chat_list):
-            unnamed_keys.append(_unnamed_key_direct(display))
-    for chat in group_chats:
-        titled = _group_title(chat)
-        if titled is None or titled[1]:
-            unnamed_keys.append(_unnamed_key_group(chat))
-    prefix_counts: dict[str, int] = {}
-    for k in unnamed_keys:
-        prefix_counts[_hash_id(k, 6)] = prefix_counts.get(_hash_id(k, 6), 0) + 1
-    clashing = {p for p, n in prefix_counts.items() if n > 1}
-
-    def _unnamed_id(key: str) -> str:
-        short = _hash_id(key, 6)
-        return _hash_id(key, 16) if short in clashing else short
-
+    direct_stems = _plan_direct_stems(direct_buckets)
+    group_stems = _plan_group_stems(group_chats)
     existing_by_guid = _index_existing_files()
 
     # Direct chats — merged per name.
-    for display, chat_list in direct_buckets.items():
+    for key, chat_list in direct_buckets.items():
+        display = min(_resolve_chat_display(c) for c in chat_list)
         total_msgs = sum(c["message_count"] for c in chat_list)
         if total_msgs < min_messages:
             summary.chats_skipped_empty += len(chat_list)
@@ -224,22 +214,19 @@ def export_to_vault(
             if contact_filter_lower not in blob:
                 continue
 
-        if _is_identifier(display, chat_list):
-            stem = f"{_unnamed_label_direct(display)} {_unnamed_id(_unnamed_key_direct(display))}"
-        else:
-            stem = _safe_filename(display)
-        target_path = VAULT_OUT / f"{stem}.md"
+        target_path = VAULT_OUT / f"{direct_stems[key]}.md"
+        guids = {c["chat_guid"] for c in chat_list}
         latest_ts = max(c["last_message_ts"] for c in chat_list)
-        healed = _heal_existing(
-            target_path, {c["chat_guid"] for c in chat_list}, existing_by_guid
-        )
-        if not force and not healed and _is_unchanged(target_path, latest_ts):
+        healed = _heal_existing(target_path, guids, existing_by_guid)
+        if not force and not healed and _is_unchanged(target_path, latest_ts, guids):
             summary.chats_skipped_unchanged += 1
             continue
 
+        counts: dict[str, int] = {}
         try:
-            if _write_merged_direct(chat_list, display, target_path, summary):
+            if _write_merged_direct(chat_list, display, target_path, summary, counts):
                 summary.chats_written += 1
+                _retire_absorbed(target_path, guids, counts, existing_by_guid)
         except Exception as e:  # noqa: BLE001
             _log_error(target_path, e)
 
@@ -261,22 +248,18 @@ def export_to_vault(
             if contact_filter_lower not in blob:
                 continue
 
-        titled = _group_title(chat)
-        if titled is None:
-            stem = f"Group chat (iMessage) {_unnamed_id(_unnamed_key_group(chat))}"
-        elif titled[1]:
-            stem = f"{_safe_filename(titled[0])} {_unnamed_id(_unnamed_key_group(chat))}"
-        else:
-            stem = _safe_filename(titled[0])
-        target_path = VAULT_OUT / "Groups" / f"{stem}.md"
-        healed = _heal_existing(target_path, {chat["chat_guid"]}, existing_by_guid)
-        if not force and not healed and _is_unchanged(target_path, chat["last_message_ts"]):
+        target_path = VAULT_OUT / "Groups" / f"{group_stems[chat['chat_guid']]}.md"
+        guids = {chat["chat_guid"]}
+        healed = _heal_existing(target_path, guids, existing_by_guid)
+        if not force and not healed and _is_unchanged(target_path, chat["last_message_ts"], guids):
             summary.chats_skipped_unchanged += 1
             continue
 
+        counts = {}
         try:
-            if _write_chat_file(chat, display, target_path, summary):
+            if _write_chat_file(chat, display, target_path, summary, counts):
                 summary.chats_written += 1
+                _retire_absorbed(target_path, guids, counts, existing_by_guid)
         except Exception as e:  # noqa: BLE001
             _log_error(target_path, e)
 
@@ -289,6 +272,7 @@ def _write_merged_direct(
     display: str,
     target_path: Path,
     summary: ExportSummary,
+    counts: dict[str, int] | None = None,
 ) -> bool:
     """Merge multiple direct chats with the same resolved person into one file.
 
@@ -324,6 +308,8 @@ def _write_merged_direct(
             if m["is_system_message"] or m["item_type"] != 0:
                 continue
             rendered_messages.append(m)
+            if counts is not None:
+                counts[chat["chat_guid"]] = counts.get(chat["chat_guid"], 0) + 1
 
     if not rendered_messages:
         summary.chats_skipped_empty += len(chat_list)
@@ -487,6 +473,88 @@ def _group_title(chat: dict[str, Any]) -> tuple[str, bool] | None:
     return f"{', '.join(shown)} + {len(parts) - len(shown)} more", True
 
 
+def _ids_for(keys: list[str]) -> dict[str, str]:
+    """Short id per key: 6 hex, or 16 for every key whose 6 clash."""
+    short = {k: _hash_id(k, 6) for k in keys}
+    seen: dict[str, int] = {}
+    for v in short.values():
+        seen[v] = seen.get(v, 0) + 1
+    return {k: (_hash_id(k, 16) if seen[v] > 1 else v) for k, v in short.items()}
+
+
+def _unique_stems(base: dict[str, str], ids: dict[str, str]) -> dict[str, str]:
+    """Add the id to every stem another chat shares (case-insensitive, as
+    APFS compares names), so no two chats ever write one file."""
+    folded: dict[str, int] = {}
+    for stem in base.values():
+        folded[stem.casefold()] = folded.get(stem.casefold(), 0) + 1
+    return {
+        k: (f"{stem} {ids[k]}" if folded[stem.casefold()] > 1 else stem)
+        for k, stem in base.items()
+    }
+
+
+def _plan_direct_stems(buckets: dict[str, list[dict[str, Any]]]) -> dict[str, str]:
+    """File stem per direct bucket. Ids are computed among direct chats only,
+    so whether groups are exported never changes a direct chat's name."""
+    ids = _ids_for(sorted(buckets))
+    base: dict[str, str] = {}
+    for key, chat_list in buckets.items():
+        if key.startswith("direct:"):
+            base[key] = f"{_unnamed_label_direct(key)} {ids[key]}"
+        else:
+            base[key] = _safe_filename(key[len("name:"):])
+    return _unique_stems(base, ids)
+
+
+def _plan_group_stems(group_chats: list[dict[str, Any]]) -> dict[str, str]:
+    """File stem per group chat guid; ids computed among groups only."""
+    keys = {c["chat_guid"]: _unnamed_key_group(c) for c in group_chats}
+    by_key = _ids_for(sorted(set(keys.values())))
+    ids = {g: by_key[k] for g, k in keys.items()}
+    base: dict[str, str] = {}
+    for chat in group_chats:
+        g = chat["chat_guid"]
+        titled = _group_title(chat)
+        if titled is None:
+            base[g] = f"Group chat (iMessage) {ids[g]}"
+        elif titled[1]:
+            base[g] = f"{_safe_filename(titled[0])} {ids[g]}"
+        else:
+            base[g] = _safe_filename(titled[0])
+    return _unique_stems(base, ids)
+
+
+def _retire_absorbed(
+    target_path: Path,
+    guids: set[str],
+    counts: dict[str, int],
+    index: dict[str, list[tuple[Path, frozenset[str]]]],
+) -> None:
+    """Remove other files whose chats this file now holds.
+
+    When a chat's name becomes known and the person already has a file, the
+    chat is written into that file and its old file is left over. A leftover
+    is removed only when all its chats are in this file and this write
+    rendered at least as many of their messages as it recorded, so no
+    message is lost; otherwise it stays.
+    """
+    for g in sorted(guids):
+        for path, file_guids in index.get(g, []):
+            if path == target_path or not path.exists() or not file_guids <= guids:
+                continue
+            try:
+                old = int(frontmatter.load(str(path)).metadata.get("message_count") or 0)
+            except Exception:
+                continue
+            if sum(counts.get(x, 0) for x in file_guids) < old:
+                continue
+            try:
+                path.unlink()
+            except OSError as e:
+                _log_error(path, e)
+
+
 def _file_guids(path: Path) -> set[str]:
     """chat_guid(s) an existing exporter-owned chat file declares."""
     try:
@@ -565,9 +633,15 @@ def _safe_filename(name: str) -> str:
     return cleaned
 
 
-def _is_unchanged(path: Path, last_message_ts: int) -> bool:
-    """Return True if the existing vault file already covers up to last_message_ts."""
+def _is_unchanged(path: Path, last_message_ts: int, guids: set[str] | None = None) -> bool:
+    """Return True if the existing vault file already covers up to last_message_ts.
+
+    With guids, the file must also hold exactly those chats: a chat that just
+    joined this person's file makes it changed, so it gets written in.
+    """
     if not path.exists():
+        return False
+    if guids is not None and _file_guids(path) != guids:
         return False
     try:
         post = frontmatter.load(str(path))
@@ -600,6 +674,7 @@ def _write_chat_file(
     display: str,
     target_path: Path,
     summary: ExportSummary,
+    counts: dict[str, int] | None = None,
 ) -> bool:
     messages = chatdb.list_messages_chronological(chat["chat_rowid"])
     if not messages:
@@ -625,6 +700,8 @@ def _write_chat_file(
             # Skip "X named the conversation", "X joined", etc.
             continue
         rendered_messages.append(m)
+    if counts is not None:
+        counts[chat["chat_guid"]] = len(rendered_messages)
 
     # Pull attachments per message.
     with chatdb.open_db() as conn:
