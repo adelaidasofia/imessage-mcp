@@ -7,6 +7,15 @@ crm_context block already work without changes):
   <IMESSAGE_VAULT_OUT>/Groups/<Group Name>.md     (group chat)
   <IMESSAGE_VAULT_OUT>/Attachments/<guid>-<filename>   (copied attachments)
 
+When no name is known, a chat is never filed under its phone number, email or
+chat identifier (tickets#6939): Studio shows the file name as the title. It is
+filed as "Chat with an unknown number (iMessage) <id>.md" (or "... unknown
+email ...") and "Groups/Group chat (iMessage) <id>.md", where <id> is the start
+of a hash of the handle or chat guid: unique per chat and the same on every
+run. The handle stays in the frontmatter (phone/email, chat_guid). An existing
+file is found by its frontmatter chat_guid(s), so when a name becomes known
+(or an old file sits under a bare number) it is renamed, not duplicated.
+
 YAML frontmatter:
   type: imessage-chat
   contact: "<display>"
@@ -27,6 +36,7 @@ as `![[Attachments/<filename>]]` (Obsidian inline preview).
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -172,6 +182,28 @@ def export_to_vault(
             display = _resolve_chat_display(chat)
             direct_buckets.setdefault(display, []).append(chat)
 
+    # File names for chats with no known name: a hash of the handle (direct)
+    # or chat guid (group). Any 6-char prefix two chats share is lengthened
+    # for both, so the choice does not depend on chat order.
+    unnamed_keys: list[str] = []
+    for display, chat_list in direct_buckets.items():
+        if _is_identifier(display, chat_list):
+            unnamed_keys.append(_unnamed_key_direct(display))
+    for chat in group_chats:
+        titled = _group_title(chat)
+        if titled is None or titled[1]:
+            unnamed_keys.append(_unnamed_key_group(chat))
+    prefix_counts: dict[str, int] = {}
+    for k in unnamed_keys:
+        prefix_counts[_hash_id(k, 6)] = prefix_counts.get(_hash_id(k, 6), 0) + 1
+    clashing = {p for p, n in prefix_counts.items() if n > 1}
+
+    def _unnamed_id(key: str) -> str:
+        short = _hash_id(key, 6)
+        return _hash_id(key, 16) if short in clashing else short
+
+    existing_by_guid = _index_existing_files()
+
     # Direct chats — merged per name.
     for display, chat_list in direct_buckets.items():
         total_msgs = sum(c["message_count"] for c in chat_list)
@@ -192,9 +224,16 @@ def export_to_vault(
             if contact_filter_lower not in blob:
                 continue
 
-        target_path = VAULT_OUT / f"{_safe_filename(display)}.md"
+        if _is_identifier(display, chat_list):
+            stem = f"{_unnamed_label_direct(display)} {_unnamed_id(_unnamed_key_direct(display))}"
+        else:
+            stem = _safe_filename(display)
+        target_path = VAULT_OUT / f"{stem}.md"
         latest_ts = max(c["last_message_ts"] for c in chat_list)
-        if not force and _is_unchanged(target_path, latest_ts):
+        healed = _heal_existing(
+            target_path, {c["chat_guid"] for c in chat_list}, existing_by_guid
+        )
+        if not force and not healed and _is_unchanged(target_path, latest_ts):
             summary.chats_skipped_unchanged += 1
             continue
 
@@ -222,8 +261,16 @@ def export_to_vault(
             if contact_filter_lower not in blob:
                 continue
 
-        target_path = _target_path_for(chat, display)
-        if not force and _is_unchanged(target_path, chat["last_message_ts"]):
+        titled = _group_title(chat)
+        if titled is None:
+            stem = f"Group chat (iMessage) {_unnamed_id(_unnamed_key_group(chat))}"
+        elif titled[1]:
+            stem = f"{_safe_filename(titled[0])} {_unnamed_id(_unnamed_key_group(chat))}"
+        else:
+            stem = _safe_filename(titled[0])
+        target_path = VAULT_OUT / "Groups" / f"{stem}.md"
+        healed = _heal_existing(target_path, {chat["chat_guid"]}, existing_by_guid)
+        if not force and not healed and _is_unchanged(target_path, chat["last_message_ts"]):
             summary.chats_skipped_unchanged += 1
             continue
 
@@ -369,11 +416,143 @@ def _resolve_chat_display(chat: dict[str, Any]) -> str:
     return handle or chat.get("chat_identifier", "Unknown")
 
 
-def _target_path_for(chat: dict[str, Any], display: str) -> Path:
-    safe = _safe_filename(display)
-    if chat["kind"] == "group":
-        return VAULT_OUT / "Groups" / f"{safe}.md"
-    return VAULT_OUT / f"{safe}.md"
+_IDENTIFIER_RE = re.compile(r"^[\d+\s\-().]+$")
+
+
+def _looks_like_identifier(name: str) -> bool:
+    """A phone number, short code, email or chat id posing as a name."""
+    n = (name or "").strip()
+    if not n:
+        return True
+    if "@" in n:
+        return True
+    if re.fullmatch(r"chat\d+", n):
+        return True
+    return bool(_IDENTIFIER_RE.match(n)) and any(ch.isdigit() for ch in n)
+
+
+def _is_identifier(display: str, chat_list: list[dict[str, Any]]) -> bool:
+    """True when a direct chat's display is its handle, not a person's name."""
+    if _looks_like_identifier(display):
+        return True
+    raw = {c.get("chat_identifier", "") for c in chat_list}
+    raw |= {p["handle"] for c in chat_list for p in c.get("participants", [])}
+    return display in raw
+
+
+def _hash_id(key: str, n: int) -> str:
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:n]
+
+
+def _unnamed_key_direct(handle: str) -> str:
+    return "direct:" + handle.strip().lower()
+
+
+def _unnamed_key_group(chat: dict[str, Any]) -> str:
+    return "group:" + (chat.get("chat_guid") or chat.get("chat_identifier") or "")
+
+
+def _unnamed_label_direct(handle: str) -> str:
+    if "@" in handle:
+        return "Chat with an unknown email address (iMessage)"
+    return "Chat with an unknown number (iMessage)"
+
+
+def _group_title(chat: dict[str, Any]) -> tuple[str, bool] | None:
+    """Readable name for a group's file, or None when no name is known.
+
+    Returns (title, needs_id). The group's own name wins. Otherwise the
+    participants whose names are in Contacts, in the same shape as before
+    when every participant has a name. Handles without a name are counted,
+    never printed; such a title is not unique ("Ana + 2 more" can be several
+    groups), so needs_id asks the caller to add the chat's short id.
+    """
+    name = (chat.get("display_name") or "").strip()
+    if name and not _looks_like_identifier(name):
+        return name, False
+    parts = chat.get("participants", [])
+    names: list[str] = []
+    unknown = 0
+    for p in parts:
+        n = contacts.resolve_handle(p["handle"])
+        if n and not _looks_like_identifier(n):
+            names.append(n)
+        else:
+            unknown += 1
+    if not names:
+        return None
+    if not unknown:
+        return ", ".join(names[:4]) + ("…" if len(parts) > 4 else ""), False
+    shown = list(dict.fromkeys(names))[:4]
+    return f"{', '.join(shown)} + {len(parts) - len(shown)} more", True
+
+
+def _file_guids(path: Path) -> set[str]:
+    """chat_guid(s) an existing exporter-owned chat file declares."""
+    try:
+        meta = frontmatter.load(str(path)).metadata or {}
+    except Exception:
+        return set()
+    if meta.get("type") != "imessage-chat":
+        return set()
+    guids: set[str] = set()
+    one = meta.get("chat_guid")
+    if isinstance(one, str) and one:
+        guids.add(one)
+    many = meta.get("chat_guids")
+    if isinstance(many, str) and many:
+        guids.add(many)
+    elif isinstance(many, list):
+        guids |= {g for g in many if isinstance(g, str) and g}
+    return guids
+
+
+def _index_existing_files() -> dict[str, list[tuple[Path, frozenset[str]]]]:
+    """guid -> chat files that claim it, across the direct and Groups folders."""
+    index: dict[str, list[tuple[Path, frozenset[str]]]] = {}
+    for folder in (VAULT_OUT, VAULT_OUT / "Groups"):
+        if not folder.is_dir():
+            continue
+        for path in folder.glob("*.md"):
+            guids = frozenset(_file_guids(path))
+            for g in guids:
+                index.setdefault(g, []).append((path, guids))
+    return index
+
+
+def _heal_existing(
+    target_path: Path,
+    guids: set[str],
+    index: dict[str, list[tuple[Path, frozenset[str]]]],
+) -> bool:
+    """Move this chat's existing file to target_path when it sits elsewhere.
+
+    Files are matched by the chat_guid(s) in their frontmatter, not by name,
+    so a chat whose name changed (a contact got a name, or the old file was
+    named after the number) keeps one file. Only a file whose guids all belong
+    to this chat is moved, and only onto a free name. Returns True when a
+    file was moved, so the caller rewrites it in full.
+    """
+    if target_path.exists():
+        return False
+    for g in sorted(guids):
+        for path, file_guids in index.get(g, []):
+            if path == target_path or not path.exists():
+                continue
+            if not file_guids <= guids:
+                continue  # that file also holds another chat: not ours to move
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                path.rename(target_path)
+            except OSError as e:
+                _log_error(path, e)
+                continue
+            for lst in index.values():
+                for i, (p, fg) in enumerate(lst):
+                    if p == path:
+                        lst[i] = (target_path, fg)
+            return True
+    return False
 
 
 def _safe_filename(name: str) -> str:
