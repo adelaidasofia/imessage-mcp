@@ -230,3 +230,49 @@ def test_leftover_with_history_the_database_lacks_is_kept(env):
     old.write_text("---\ntype: imessage-chat\nchat_guid: g-a\nmessage_count: 40\n---\n\nolder\n", encoding="utf-8")
     export.export_to_vault()
     assert old.exists()
+
+
+def _total_messages(root: Path) -> int:
+    return sum(int(frontmatter.load(str(p)).metadata.get("message_count") or 0) for p in _files(root))
+
+
+def test_rename_by_capitals_keeps_the_file_and_its_messages(env):
+    root, state = env
+    state["names"] = {PHONE_A: "alex rivera"}
+    state["chats"] = [_chat(1, "g-a", PHONE_A)]
+    export.export_to_vault()
+    assert [f.name for f in _files(root)] == ["alex rivera.md"]
+    state["names"] = {PHONE_A: "Alex Rivera"}
+    export.export_to_vault()
+    files = _files(root)
+    assert len(files) == 1, files
+    assert files[0].name == "Alex Rivera.md"
+    assert _guids(files[0]) == {"g-a"}
+    assert _total_messages(root) == 1
+
+
+def test_person_with_two_chats_renamed_by_capitals_keeps_all_messages(env):
+    root, state = env
+    state["names"] = {PHONE_A: "alex rivera", EMAIL: "alex rivera"}
+    state["chats"] = [_chat(1, "g-a", PHONE_A), _chat(2, "g-e", EMAIL)]
+    export.export_to_vault()
+    assert [f.name for f in _files(root)] == ["alex rivera.md"]
+    state["names"] = {PHONE_A: "Alex Rivera", EMAIL: "Alex Rivera"}
+    export.export_to_vault()
+    files = _files(root)
+    assert len(files) == 1, files
+    assert files[0].name == "Alex Rivera.md"
+    assert _guids(files[0]) == {"g-a", "g-e"}
+    assert _total_messages(root) == 2
+
+
+def test_name_matching_another_file_by_capitals_does_not_overwrite_it(env):
+    root, state = env
+    note = root / "Alex Rivera.md"
+    note.write_text("---\ntitle: my own note\n---\n\nmine\n", encoding="utf-8")
+    state["names"] = {PHONE_A: "alex rivera"}
+    state["chats"] = [_chat(1, "g-a", PHONE_A)]
+    export.export_to_vault()
+    assert note.read_text(encoding="utf-8").endswith("mine\n")
+    chat_files = [f for f in _files(root) if _guids(f) == {"g-a"}]
+    assert len(chat_files) == 1

@@ -214,10 +214,15 @@ def export_to_vault(
             if contact_filter_lower not in blob:
                 continue
 
-        target_path = VAULT_OUT / f"{direct_stems[key]}.md"
         guids = {c["chat_guid"] for c in chat_list}
-        latest_ts = max(c["last_message_ts"] for c in chat_list)
+        target_path = VAULT_OUT / f"{direct_stems[key]}.md"
+        owned = _owned_target(target_path, guids, key)
+        if owned is None:
+            _log_error(target_path, FileExistsError("name taken by another file"))
+            continue
+        target_path = owned
         healed = _heal_existing(target_path, guids, existing_by_guid)
+        latest_ts = max(c["last_message_ts"] for c in chat_list)
         if not force and not healed and _is_unchanged(target_path, latest_ts, guids):
             summary.chats_skipped_unchanged += 1
             continue
@@ -250,6 +255,11 @@ def export_to_vault(
 
         target_path = VAULT_OUT / "Groups" / f"{group_stems[chat['chat_guid']]}.md"
         guids = {chat["chat_guid"]}
+        owned = _owned_target(target_path, guids, chat["chat_guid"])
+        if owned is None:
+            _log_error(target_path, FileExistsError("name taken by another file"))
+            continue
+        target_path = owned
         healed = _heal_existing(target_path, guids, existing_by_guid)
         if not force and not healed and _is_unchanged(target_path, chat["last_message_ts"], guids):
             summary.chats_skipped_unchanged += 1
@@ -525,6 +535,32 @@ def _plan_group_stems(group_chats: list[dict[str, Any]]) -> dict[str, str]:
     return _unique_stems(base, ids)
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    """True when two paths open one file. On APFS (case-insensitive) names
+    differing only in capitals are one file, so string equality is not
+    enough."""
+    try:
+        return a.samefile(b)
+    except OSError:
+        return False
+
+
+def _owned_target(
+    target_path: Path, guids: set[str], key: str
+) -> Path | None:
+    """target_path, or a name with the chat's id when the file already there
+    belongs to another chat or is not an exporter file (a user's note, or a
+    chat filtered out of this run whose name matches ignoring capitals).
+    None when even that name is taken."""
+    for candidate in (target_path, target_path.with_name(f"{target_path.stem} {_hash_id(key, 16)}.md")):
+        if not candidate.exists():
+            return candidate
+        owner = _file_guids(candidate)
+        if owner and owner <= guids:
+            return candidate
+    return None
+
+
 def _retire_absorbed(
     target_path: Path,
     guids: set[str],
@@ -537,12 +573,17 @@ def _retire_absorbed(
     chat is written into that file and its old file is left over. A leftover
     is removed only when all its chats are in this file and this write
     rendered at least as many of their messages as it recorded, so no
-    message is lost; otherwise it stays.
+    message is lost; otherwise it stays. message_count only says how many
+    messages the file held, not which: if the database has aged out old
+    messages and gained as many new ones, the check passes and the aged-out
+    ones are lost. It guards the common case, not that one.
     """
     for g in sorted(guids):
         for path, file_guids in index.get(g, []):
-            if path == target_path or not path.exists() or not file_guids <= guids:
+            if not path.exists() or not file_guids <= guids:
                 continue
+            if path == target_path or _same_file(path, target_path):
+                continue  # the file just written, perhaps under other capitals
             try:
                 old = int(frontmatter.load(str(path)).metadata.get("message_count") or 0)
             except Exception:
@@ -598,17 +639,22 @@ def _heal_existing(
     Files are matched by the chat_guid(s) in their frontmatter, not by name,
     so a chat whose name changed (a contact got a name, or the old file was
     named after the number) keeps one file. Only a file whose guids all belong
-    to this chat is moved, and only onto a free name. Returns True when a
+    to this chat is moved, and only onto a free name, or onto its own name
+    in other capitals (one file on APFS). Returns True when a
     file was moved, so the caller rewrites it in full.
     """
-    if target_path.exists():
-        return False
+    occupied = target_path.exists()
     for g in sorted(guids):
         for path, file_guids in index.get(g, []):
             if path == target_path or not path.exists():
                 continue
             if not file_guids <= guids:
                 continue  # that file also holds another chat: not ours to move
+            if occupied:
+                # Only a rename by capitals: the target name already opens
+                # this very file. Rename it so the new capitals show.
+                if path.name == target_path.name or not _same_file(path, target_path):
+                    continue
             target_path.parent.mkdir(parents=True, exist_ok=True)
             try:
                 path.rename(target_path)
